@@ -5,6 +5,8 @@
     "minAppVersion": "0.15.0",
     "description": "A chat interface integrated with Gemini API for Obsidian.",
     "author": "Roo",
+    "authorUrl": "https://example.com",
+    "fundingUrl": "https://example.com/donate",
     "isDesktopOnly": true,
     "main": "main.js"
 }
