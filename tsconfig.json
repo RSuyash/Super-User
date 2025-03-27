@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "obsidian": ["./node_modules/obsidian"]
+    },
+    "target": "es6",
+    "module": "esnext",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "jsx": "react",
+    "lib": ["es6", "dom"],
+    "skipLibCheck": true,
+    "noImplicitAny": false,
+    "outDir": "./src" 
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
+}
