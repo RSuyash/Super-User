@@ -42,14 +42,17 @@ const STYLES = `
 
 // --- Utility Functions ---
 function renderMarkdownUtil(markdownText, targetEl, app, component) { const sourcePath = app.workspace.getActiveFile()?.path || ''; MarkdownRenderer.renderMarkdown(markdownText, targetEl, sourcePath, component); }
-function insertIntoEditorUtil(text, app) { const editor = app.workspace.activeEditor?.editor; if (editor) { editor.replaceSelection(text); new Notice('Inserted'); } else { new Notice('No active editor'); } }
+function insertIntoEditorUtil(text, app) { const editor = app.workspace.getActiveEditor?.editor; if (editor) { editor.replaceSelection(text); new Notice('Inserted'); } else { new Notice('No active editor'); } }
 function sanitizeFilenameUtil(name) { return name.replace(/[\\/:*?"<>|]/g, '-'); }
 async function createNoteUtil(title, content, folderPath, app) { const sanitizedTitle = sanitizeFilenameUtil(title); const cleanFolderPath = folderPath ? folderPath.trim().replace(/\\/g, '/').replace(/\/$/, '') : ''; const fullPath = cleanFolderPath ? `${cleanFolderPath}/${sanitizedTitle}.md` : `${sanitizedTitle}.md`; try { if (cleanFolderPath && !(await app.vault.adapter.exists(cleanFolderPath))) { await app.vault.createFolder(cleanFolderPath); console.log(`Utils: Created folder: ${cleanFolderPath}`); } let finalPath = fullPath; let counter = 1; while (await app.vault.adapter.exists(finalPath)) { finalPath = cleanFolderPath ? `${cleanFolderPath}/${sanitizedTitle}-${counter}.md` : `${sanitizedTitle}-${counter}.md`; counter++; } const newFile = await app.vault.create(finalPath, content); new Notice(`Note created: ${newFile.basename}`); return newFile; } catch (error) { new Notice(`Failed to create note: ${error.message}`); console.error('Utils: Failed to create note:', error); return null; } }
+
+// --- WebSocket Manager ---
+// Removed as we are using direct API calls
 
 // --- Settings Tab ---
 class WebappDashboardSettingTab extends PluginSettingTab {
 	constructor(app, plugin) { super(app, plugin); this.plugin = plugin; }
-	display() { const {containerEl} = this; containerEl.empty(); containerEl.createEl('h2', {text: 'Webapp Dashboard Settings'}); containerEl.createEl('h3', { text: 'Gemini API' }); new Setting(containerEl).setName('Gemini API Key').setDesc('Your Google AI Gemini API Key. Stored locally.').addText(t => t.setPlaceholder('Enter API Key').setValue(this.plugin.settings.geminiApiKey).onChange(async (v) => { this.plugin.settings.geminiApiKey = v.trim(); await this.plugin.saveSettings(); })); new Setting(containerEl).setName('Gemini Model').setDesc('Select model.').addDropdown(d => d.addOption('gemini-pro', 'Gemini Pro').addOption('gemini-1.5-flash-latest', 'Gemini 1.5 Flash').addOption('gemini-1.5-pro-latest', 'Gemini 1.5 Pro').setValue(this.plugin.settings.geminiModel || DEFAULT_SETTINGS.geminiModel).onChange(async (v) => { this.plugin.settings.geminiModel = v; await this.plugin.saveSettings(); })); containerEl.createEl('h3', { text: 'Chat Behavior' }); new Setting(containerEl).setName('Prompt Prefix').setDesc('Prepend text to messages.').addTextArea(t => t.setPlaceholder('e.g., Act as...').setValue(this.plugin.settings.promptPrefix).onChange(async (v) => { this.plugin.settings.promptPrefix = v; await this.plugin.saveSettings(); })); new Setting(containerEl).setName('Send Context').setDesc('Include active note name.').addToggle(t => t.setValue(this.plugin.settings.sendContext).onChange(async (v) => { this.plugin.settings.sendContext = v; await this.plugin.saveSettings(); })); new Setting(containerEl).setName('Insert Template').setDesc('Template for inserting responses ({response}).').addText(t => t.setPlaceholder(DEFAULT_SETTINGS.insertTemplate).setValue(this.plugin.settings.insertTemplate).onChange(async (v) => { this.plugin.settings.insertTemplate = v || DEFAULT_SETTINGS.insertTemplate; await this.plugin.saveSettings(); })); containerEl.createEl('h3', { text: 'History & Export' }); new Setting(containerEl).setName('Max History').setDesc('Messages to keep (0 for unlimited).').addText(t => t.setPlaceholder(String(DEFAULT_SETTINGS.maxHistoryLength)).setValue(String(this.plugin.settings.maxHistoryLength)).onChange(async (v) => { const n = parseInt(v, 10); this.plugin.settings.maxHistoryLength = (isNaN(n) || n < 0) ? DEFAULT_SETTINGS.maxHistoryLength : n; if (this.plugin.settings.maxHistoryLength > 0 && this.plugin.settings.chatHistory.length > this.plugin.settings.maxHistoryLength) { this.plugin.settings.chatHistory = this.plugin.settings.chatHistory.slice(-this.plugin.settings.maxHistoryLength); } await this.plugin.saveSettings(); })); new Setting(containerEl).setName('Note Folder').setDesc('Folder for created notes (blank for root).').addText(t => t.setPlaceholder('e.g., Chats/').setValue(this.plugin.settings.createNoteFolder).onChange(async (v) => { this.plugin.settings.createNoteFolder = v.trim().replace(/\\/g, '/').replace(/\/$/, ''); await this.plugin.saveSettings(); })); new Setting(containerEl).setName('Clear History').setDesc('Delete saved chat history.').addButton(b => b.setButtonText('Clear').setWarning().onClick(async () => { if (confirm('Clear chat history?')) { this.plugin.settings.chatHistory = []; await this.plugin.saveSettings(); new Notice('History cleared.'); this.app.workspace.trigger('webapp-dashboard:clear-history'); } })); }
+	display() { const {containerEl} = this; containerEl.empty(); containerEl.createEl('h2', {text: 'Webapp Dashboard Settings'}); containerEl.createEl('h3', { text: 'Gemini API' }); new Setting(containerEl).setName('Gemini API Key').setDesc('Your Google AI Gemini API Key. Stored locally.').addText(t => t.setPlaceholder('Enter API Key').setValue(this.plugin.settings.geminiApiKey).onChange(async (v) => { this.plugin.settings.geminiApiKey = v.trim(); await this.plugin.saveSettings(); })); new Setting(containerEl).setName('Gemini Model').setDesc('Select model.').addDropdown(d => d.addOption('gemini-pro', 'Gemini Pro').addOption('gemini-1.5-flash-latest', 'Gemini 1.5 Flash').addOption('gemini-1.5-pro-latest', 'Gemini 1.5 Pro').setValue(this.plugin.settings.geminiModel || DEFAULT_SETTINGS.geminiModel).onChange(async (v) => { this.plugin.settings.geminiModel = v; await this.plugin.saveSettings(); })); containerEl.createEl('h3', { text: 'Chat Behavior' }); new Setting(containerEl).setName('Prompt Prefix').setDesc('Prepend text to messages.').addTextArea(t => t.setPlaceholder('e.g., Act as...').setValue(this.plugin.settings.promptPrefix).onChange(async (v) => { this.plugin.settings.promptPrefix = v; await this.plugin.saveSettings(); })); new Setting(containerEl).setName('Send Context').setDesc('Include active note name.').addToggle(t => t.setValue(this.plugin.settings.sendContext).onChange(async (v) => { this.plugin.settings.sendContext = v; await this.plugin.saveSettings(); })); new Setting(containerEl).setName('Insert Template').setDesc('Template for inserting responses ({response}).').addText(t => t.setPlaceholder(DEFAULT_SETTINGS.insertTemplate).setValue(this.plugin.settings.insertTemplate).onChange(async (v) => { this.plugin.settings.insertTemplate = v || DEFAULT_SETTINGS.insertTemplate; await this.plugin.saveSettings(); })); containerEl.createEl('h3', { text: 'History & Export' }); new Setting(containerEl).setName('Max History').setDesc('Messages to keep (0 for unlimited).').addText(t => t.setPlaceholder(String(DEFAULT_SETTINGS.maxHistoryLength)).setValue(String(this.plugin.settings.maxHistoryLength)).onChange(async (v) => { const n = parseInt(v, 10); this.plugin.settings.maxHistoryLength = (isNaN(n) || n < 0) ? DEFAULT_SETTINGS.maxHistoryLength : n; if (this.plugin.settings.chatHistory.length > this.plugin.settings.maxHistoryLength) { this.plugin.settings.chatHistory = this.plugin.settings.chatHistory.slice(-this.plugin.settings.maxHistoryLength); } await this.plugin.saveSettings(); })); new Setting(containerEl).setName('Note Folder').setDesc('Folder for created notes (blank for root).').addText(t => t.setPlaceholder('e.g., Chats/').setValue(this.plugin.settings.createNoteFolder).onChange(async (v) => { this.plugin.settings.createNoteFolder = v.trim().replace(/\\/g, '/').replace(/\/$/, ''); await this.plugin.saveSettings(); })); new Setting(containerEl).setName('Clear History').setDesc('Delete saved chat history.').addButton(b => b.setButtonText('Clear').setWarning().onClick(async () => { if (confirm('Clear chat history?')) { this.plugin.settings.chatHistory = []; await this.plugin.saveSettings(); new Notice('History cleared.'); this.app.workspace.trigger('webapp-dashboard:clear-history'); } })); }
 }
 
 // --- Chat Modal ---
@@ -65,25 +68,75 @@ class ChatModal extends Modal {
     hideSearchResults() { if (this.searchResultsEl) { this.searchResultsEl.classList.remove('active'); this.searchResultsEl.empty(); } }
     async searchNotes(q, container) { if (!q) { this.hideSearchResults(); return; } const files = this.app.vault.getMarkdownFiles(); this.searchResults = files.filter(f => f.basename.toLowerCase().includes(q)).slice(0, 5); this.displaySearchResults(this.searchResults, container, (f) => `[[${f.basename}]]`); }
     async searchTags(q, container) { if (!q) { this.hideSearchResults(); return; } const tags = Object.keys(this.app.metadataCache.getTags()); this.searchResults = tags.filter(t => t.toLowerCase().includes(q)).slice(0, 5); this.displaySearchResults(this.searchResults, container, (t) => t); }
-    displaySearchResults(results, container, formatResult) { container.empty(); if (results.length === 0) { container.classList.remove('active'); return; } results.forEach(r => { const item = container.createDiv({ cls: 'search-item-modal' }); item.textContent = r.basename || r; item.addEventListener('mousedown', (e) => { e.preventDefault(); const txt = this.inputEl.value; const pos = this.inputEl.selectionStart; const before = txt.slice(0, pos).replace(/(?:^|\s)(?:\[\[|@)[^\s]*$/, ''); const after = txt.slice(pos); const fmt = formatResult(r); this.inputEl.value = before + fmt + ' ' + after; this.inputEl.focus(); const newPos = before.length + fmt.length + 1; this.inputEl.setSelectionRange(newPos, newPos); this.hideSearchResults(); }); }); container.classList.add('active'); }
+    displaySearchResults(results, container, formatResult) { container.empty(); if (results.length === 0) { container.classList.remove('active'); return; } results.forEach(result => { const item = container.createDiv({ cls: 'search-item-modal' }); item.textContent = result.basename || result; item.addEventListener('mousedown', (e) => { e.preventDefault(); const txt = this.inputEl.value; const pos = this.inputEl.selectionStart; const before = txt.slice(0, pos).replace(/(?:^|\s)(?:\[\[|@)[^\s]*$/, ''); const after = txt.slice(pos); const fmt = formatResult(r); this.inputEl.value = before + fmt + ' ' + after; this.inputEl.focus(); const newPos = before.length + fmt.length + 1; this.inputEl.setSelectionRange(newPos, newPos); this.hideSearchResults(); }); }); container.classList.add('active'); }
     async createNoteFromChat() { console.log("ChatModal: createNote"); if (!this.chatLogEl) return; const msgs = Array.from(this.chatLogEl.children).filter(el => !el.classList.contains('system-message-modal')).map(m => m.textContent || ''); const fname = `Chat-${new Date().toISOString().replace(/[:.]/g, '-')}`; const content = msgs.join('\n\n'); await createNoteUtil(fname, content, this.plugin.settings.createNoteFolder, this.app); this.close(); }
     async exportChat() { console.log("ChatModal: exportChat"); if (!this.chatLogEl) return; const msgs = Array.from(this.chatLogEl.children).filter(el => !el.classList.contains('system-message-modal')).map(m => m.textContent || ''); const content = msgs.join('\n\n'); try { await navigator.clipboard.writeText(content); new Notice('Copied'); } catch (err) { new Notice('Failed copy'); console.error('ChatModal: Failed copy:', err); } }
-    displayMessage(sender, message) { if (!this.chatLogEl) return; const msgEl = this.chatLogEl.createDiv({ cls: 'message-modal' }); const tmpDiv = document.createElement('div'); if (sender === 'Gemini') { const btn = msgEl.createEl('button', { cls: 'insert-button', text: 'Insert' }); btn.addEventListener('click', () => { const tpl = this.plugin.settings.insertTemplate || '{response}'; insertIntoEditorUtil(tpl.replace('{response}', message), this.app); }); }
+    displayMessage(sender, message) { if (!this.chatLogEl) return; const msgEl = this.chatLogEl.createDiv({ cls: 'message-modal' }); const tmpDiv = document.createElement('div');
         // **Fix: Pass 'this.plugin' as component context**
-        renderMarkdownUtil(`**${sender}:** ${message}`, tmpDiv, this.app, this.plugin); // Pass plugin instance
-        msgEl.prepend(tmpDiv); this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight; if (sender !== 'System') { this.plugin.settings.chatHistory.push({ sender, message }); while (this.plugin.settings.maxHistoryLength > 0 && this.plugin.settings.chatHistory.length > this.plugin.settings.maxHistoryLength) { this.plugin.settings.chatHistory.shift(); } this.plugin.saveSettings(); } }
+        renderMarkdownUtil(`**${sender}:** ${message}`, tmpDiv, this.app, this.plugin);
+        msgEl.prepend(tmpDiv); this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight; if (sender !== 'System') { this.plugin.settings.chatHistory.push({ sender, message }); while (this.plugin.settings.chatHistory.length > this.plugin.settings.maxHistoryLength) { this.plugin.settings.chatHistory.shift(); } this.plugin.saveSettings(); } }
     insertIntoEditor(text) { insertIntoEditorUtil(text, this.app); }
     displaySystemMessage(message) { if (!this.chatLogEl) return; const msgEl = this.chatLogEl.createDiv({ cls: 'message-modal system-message-modal' }); msgEl.textContent = message; this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight; }
     loadHistory() { if (!this.chatLogEl) return; this.chatLogEl.empty(); this.plugin.settings.chatHistory.forEach(e => { if (e.sender === 'System') this.displaySystemMessage(e.message); else this.displayMessage(e.sender, e.message); }); console.log(`ChatModal: Loaded ${this.plugin.settings.chatHistory.length} msgs.`); }
-    onClose() { console.log("ChatModal: onClose"); /* No WSManager to close */ const { contentEl } = this; contentEl.empty(); }
+    onClose() { console.log("ChatModal: onClose"); const { contentEl } = this; contentEl.empty(); }
 }
 
 // --- Main Plugin Class ---
+// Define the main plugin class *after* all helper classes and functions
 class WebappDashboardPlugin extends Plugin {
     settings = DEFAULT_SETTINGS;
-    async onload() { console.log('[WebappDashboard] onload: Loading...'); try { await this.loadSettings(); console.log('[WebappDashboard] Settings loaded.'); } catch (e) { console.error('[WebappDashboard] Error loading settings:', e); } try { this.addSettingTab(new WebappDashboardSettingTab(this.app, this)); console.log('[WebappDashboard] Settings tab added.'); } catch (e) { console.error('[WebappDashboard] Error adding settings tab:', e); } try { this.addRibbonIcon('message-circle', 'Open Webapp Chat', () => { console.log('[WebappDashboard] Ribbon clicked'); try { new ChatModal(this.app, this).open(); } catch (e) { console.error("Err opening modal (ribbon):", e); new Notice("Failed open chat."); } }); console.log('[WebappDashboard] Ribbon added.'); } catch (e) { console.error('[WebappDashboard] Error adding ribbon:', e); } try { this.addCommand({ id: 'open-webapp-dashboard-chat', name: 'Open Webapp Chat', hotkeys: [{ modifiers: ["Mod", "Shift"], key: "C" }], callback: () => { console.log('[WebappDashboard] Command run'); try { new ChatModal(this.app, this).open(); } catch (e) { console.error("Err opening modal (cmd):", e); new Notice("Failed open chat."); } } }); console.log('[WebappDashboard] Command added.'); } catch (e) { console.error('[WebappDashboard] Error adding command:', e); } this.registerEvent(this.app.workspace.on('webapp-dashboard:clear-history', () => { console.log('[WebappDashboard] clear-history event'); this.app.workspace.getLeavesOfType('modal').forEach(l => { if (l.view instanceof Modal && l.view.constructor.name === 'ChatModal') { try { if(l.view.loadHistory) l.view.loadHistory(); } catch (e) { console.error("Err reloading history:", e); } } }); })); console.log('[WebappDashboard] Event listener registered.'); console.log('[WebappDashboard] onload: Finished.'); }
-    onunload() { console.log('[WebappDashboard] onunload: Unloading...'); }
-    async loadSettings() { try { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); if (!Array.isArray(this.settings.chatHistory)) this.settings.chatHistory = []; if (this.settings.maxHistoryLength > 0 && this.settings.chatHistory.length > this.settings.maxHistoryLength) { this.settings.chatHistory = this.settings.chatHistory.slice(-this.settings.maxHistoryLength); } console.log('[WebappDashboard] loadSettings: Success.'); } catch (e) { console.error('[WebappDashboard] loadSettings: Error:', e); this.settings = DEFAULT_SETTINGS; } }
-	async saveSettings() { try { await this.saveData(this.settings); console.log('[WebappDashboard] saveSettings: Success.'); } catch (e) { console.error('[WebappDashboard] saveSettings: Error:', e); new Notice("Failed save settings."); } }
+
+    async onload() {
+        console.log('[WebappDashboard] onload: Loading plugin...');
+        try {
+            await this.loadSettings();
+            console.log('[WebappDashboard] onload: Settings loaded.');
+        } catch (error) { console.error('[WebappDashboard] onload: Error loading settings:', error); }
+
+        try {
+            this.addSettingTab(new WebappDashboardSettingTab(this.app, this));
+            console.log('[WebappDashboard] onload: Settings tab added.');
+        } catch (error) { console.error('[WebappDashboard] onload: Error adding settings tab:', error); }
+
+        try {
+            this.addRibbonIcon('message-circle', 'Open Webapp Chat', () => {
+                console.log('[WebappDashboard] Ribbon icon clicked');
+                try { new ChatModal(this.app, this).open(); }
+                catch (e) { console.error("Err opening modal from ribbon:", e); new Notice("Failed to open chat modal."); }
+            });
+            console.log('[WebappDashboard] onload: Ribbon icon added.');
+        } catch (error) { console.error('[WebappDashboard] onload: Error adding ribbon icon:', error); }
+
+        try {
+            this.addCommand({
+                id: 'open-webapp-dashboard-chat', name: 'Open Webapp Chat',
+                hotkeys: [{ modifiers: ["Mod", "Shift"], key: "C" }],
+                callback: () => {
+                    console.log('[WebappDashboard] Command executed');
+                    try { new ChatModal(this.app, this).open(); }
+                    catch (e) { console.error("Err opening modal from command:", e); new Notice("Failed to open chat modal."); }
+                }
+            });
+            console.log('[WebappDashboard] onload: Command added.');
+        } catch (error) { console.error('[WebappDashboard] onload: Error adding command:', error); }
+
+        this.registerEvent(this.app.workspace.on('webapp-dashboard:clear-history', () => {
+            console.log('[WebappDashboard] clear-history event');
+            this.app.workspace.getLeavesOfType('modal').forEach(leaf => {
+                if (leaf.view instanceof Modal && leaf.view.constructor.name === 'ChatModal') {
+                     try { if(leaf.view.loadHistory) leaf.view.loadHistory(); } catch (e) { console.error("Error reloading history on modal:", e); }
+                }
+            });
+        }));
+        console.log('[WebappDashboard] onload: Event listener registered.');
+
+        console.log('[WebappDashboard] onload: Finished.');
+    }
+
+    onunload() { console.log('[WebappDashboard] onunload: Unloading plugin...'); }
+    async loadSettings() { try { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); if (!Array.isArray(this.settings.chatHistory)) this.settings.chatHistory = []; if (this.settings.maxHistoryLength > 0 && this.settings.chatHistory.length > this.settings.maxHistoryLength) { this.settings.chatHistory = this.settings.chatHistory.slice(-this.settings.maxHistoryLength); } console.log('[WebappDashboard] loadSettings: Success.'); } catch (error) { console.error('[WebappDashboard] loadSettings: Error:', error); this.settings = DEFAULT_SETTINGS; } }
+	async saveSettings() { try { await this.saveData(this.settings); console.log('[WebappDashboard] saveSettings: Success.'); } catch (error) { console.error('[WebappDashboard] saveSettings: Error:', error); new Notice("Failed to save settings."); } }
 }
+
+// Export the main plugin class
 module.exports = WebappDashboardPlugin;

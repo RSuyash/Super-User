@@ -1,13 +1,12 @@
-const { Modal, Notice, App } = require('obsidian');
-const WebSocketManager = require('./WebSocketManager');
-const { renderMarkdown, insertIntoEditor, createNote } = require('./utils');
+const { Modal, Notice, MarkdownRenderer, App } = require('obsidian');
+const { renderMarkdownUtil, insertIntoEditorUtil, createNoteUtil, sanitizeFilenameUtil } = require('./utils');
 
 const STYLES = `
 /* Basic Modal Styling */
-.chat-modal .modal { max-width: 600px; width: 90%; }
+.chat-modal .modal { max-width: 700px; width: 95%; }
 .chat-modal .modal-content { padding: 0; }
 /* Chat Interface Styling */
-.chat-container-modal { height: 500px; display: flex; flex-direction: column; background-color: var(--background-primary); }
+.chat-container-modal { height: 550px; display: flex; flex-direction: column; background-color: var(--background-primary); }
 .chat-log-modal { flex-grow: 1; padding: 15px; overflow-y: scroll; border-bottom: 1px solid var(--background-modifier-border); }
 .input-area-modal { padding: 10px 15px; display: flex; gap: 8px; border-top: 1px solid var(--background-modifier-border); position: relative; }
 .chat-input-modal { flex-grow: 1; padding: 8px; }
@@ -27,21 +26,21 @@ const STYLES = `
 .connection-status.connected { color: var(--color-green); }
 .connection-status.disconnected { color: var(--color-red); }
 .connection-status.connecting { color: var(--text-muted); }
+/* Thinking Indicator */
+.thinking-indicator { font-style: italic; color: var(--text-muted); padding: 5px 15px; text-align: right; height: 1.5em; }
 `;
 
 class ChatModal extends Modal {
-    /** @param {App} app */
-    /** @param {import('./main').WebappDashboardPlugin} plugin */
     constructor(app, plugin) {
         super(app);
         this.plugin = plugin;
-        this.wsManager = null;
         this.searchResults = [];
         this.searchResultsEl = null;
         this.chatLogEl = null;
         this.inputEl = null;
         this.sendButtonEl = null;
-        this.statusEl = null; // For connection status
+        this.statusEl = null;
+        this.isThinking = false;
         this.modalEl.addClass('chat-modal');
         console.log("ChatModal: Constructor called");
     }
@@ -53,81 +52,42 @@ class ChatModal extends Modal {
         contentEl.createEl('style', { text: STYLES });
 
         const chatContainer = contentEl.createDiv({ cls: 'chat-container-modal' });
-
-        // Toolbar
         const toolbar = chatContainer.createDiv({ cls: 'toolbar-modal' });
-        const buttonGroupLeft = toolbar.createDiv({ cls: 'toolbar-button-group-left' }); // Group for future buttons
-        const buttonGroupRight = toolbar.createDiv({ cls: 'toolbar-button-group-right' });
+        const buttonGroupLeft = toolbar.createDiv();
+        const buttonGroupRight = toolbar.createDiv();
+        toolbar.style.justifyContent = 'space-between';
+        buttonGroupLeft.createEl('button', { text: 'New Chat' }).addEventListener('click', () => this.clearChat(true));
+        buttonGroupRight.createEl('button', { text: 'Create Note' }).addEventListener('click', () => this.createNoteFromChat());
+        buttonGroupRight.createEl('button', { text: 'Export Chat' }).addEventListener('click', () => this.exportChat());
 
-        const newConvBtn = buttonGroupLeft.createEl('button', { text: 'New Chat' });
-        newConvBtn.addEventListener('click', () => this.clearChat());
-
-        const createNoteBtn = buttonGroupRight.createEl('button', { text: 'Create Note' });
-        createNoteBtn.addEventListener('click', () => this.createNoteFromChat());
-        const exportBtn = buttonGroupRight.createEl('button', { text: 'Export Chat' });
-        exportBtn.addEventListener('click', () => this.exportChat());
-
-        // Chat Log
         this.chatLogEl = chatContainer.createDiv({ cls: 'chat-log-modal' });
-
-        // Connection Status
-        this.statusEl = chatContainer.createDiv({ cls: 'connection-status connecting', text: 'Connecting...' });
-
-        // Input Area
+        this.statusEl = chatContainer.createDiv({ cls: 'thinking-indicator' });
         const inputArea = chatContainer.createDiv({ cls: 'input-area-modal' });
         this.searchResultsEl = inputArea.createDiv({ cls: 'search-results-modal' });
-        this.inputEl = inputArea.createEl('input', {
-            cls: 'chat-input-modal',
-            attr: { type: 'text', placeholder: 'Type [[link, @tag, /cmd...' }
-        });
+        this.inputEl = inputArea.createEl('input', { cls: 'chat-input-modal', attr: { type: 'text', placeholder: 'Ask Gemini... (Type [[link, @tag, /cmd)' } });
         this.sendButtonEl = inputArea.createEl('button', { text: 'Send' });
 
         this.loadHistory();
-        this.setupWebSocket();
         this.setupInputListeners();
-
-        this.sendButtonEl.disabled = true;
-        this.inputEl.disabled = true;
+        this.setThinking(false);
         this.inputEl.focus();
         console.log("ChatModal: onOpen finished");
     }
 
-    setupWebSocket() {
-        const url = this.plugin.settings.websocketUrl;
-        this.wsManager = new WebSocketManager(
-            url,
-            (message) => this.displayMessage('Server', message), // onMessage
-            () => { // onOpen
-                this.displaySystemMessage('Connected to server');
-                this.updateStatus('connected');
-                this.sendButtonEl.disabled = false;
-                this.inputEl.disabled = false;
-            },
-            (code, reason) => { // onClose
-                this.displaySystemMessage(`Disconnected (Code: ${code})`);
-                this.updateStatus('disconnected');
-                this.sendButtonEl.disabled = true;
-                this.inputEl.disabled = true;
-            },
-            (errorMsg) => { // onError
-                this.displaySystemMessage(`Connection Error: ${errorMsg}`);
-                this.updateStatus('disconnected');
-                this.sendButtonEl.disabled = true;
-                this.inputEl.disabled = true;
-            }
-        );
-        this.wsManager.connect();
-    }
-
-     updateStatus(status) {
-        if (!this.statusEl) return;
-        this.statusEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
-        this.statusEl.className = `connection-status ${status}`; // Update class for styling
+    setThinking(thinking) {
+        this.isThinking = thinking;
+        if (this.statusEl) {
+            this.statusEl.textContent = thinking ? 'Gemini is thinking...' : '';
+        }
+        if (this.inputEl) this.inputEl.disabled = thinking;
+        if (this.sendButtonEl) this.sendButtonEl.disabled = thinking;
+        console.log(`ChatModal: setThinking(${thinking}), Input disabled: ${this.inputEl?.disabled}`);
     }
 
     setupInputListeners() {
         this.inputEl.addEventListener('keyup', (event) => {
-            if (event.key.length > 1 && event.key !== 'Backspace' && event.key !== 'Delete') return;
+            if (this.isThinking) return;
+            if (event.key.length > 1 && !['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].contains(event.key)) return;
             const text = this.inputEl.value;
             const cursorPos = this.inputEl.selectionStart;
             const wikiLinkMatch = text.slice(0, cursorPos).match(/(?:^|\s)\[\[([^\]]*)$/);
@@ -159,7 +119,8 @@ class ChatModal extends Modal {
         });
     }
 
-    sendMessage() {
+    async sendMessage() {
+        if (this.isThinking) return;
         const message = this.inputEl.value.trim();
         if (!message) return;
 
@@ -170,50 +131,93 @@ class ChatModal extends Modal {
             return;
         }
 
-        if (this.wsManager && this.wsManager.isConnected()) {
-            this.displayMessage('User', message); // Display user message
+        this.displayMessage('User', message);
+        this.inputEl.value = '';
+        this.hideSearchResults();
+        this.setThinking(true);
 
-            const activeFile = this.app.workspace.getActiveFile();
-            const context = (this.plugin.settings.sendContext && activeFile) ? `[Context: ${activeFile.basename}] ` : '';
-            const prefix = this.plugin.settings.promptPrefix ? `${this.plugin.settings.promptPrefix}\n` : '';
-            const fullMessage = `${prefix}${context}${message}`;
+        const apiKey = this.plugin.settings.geminiApiKey;
+        if (!apiKey) {
+            this.displaySystemMessage("Error: Gemini API Key not set in plugin settings.");
+            this.setThinking(false);
+            return;
+        }
 
-            this.wsManager.send(fullMessage);
-            this.inputEl.value = '';
-            this.hideSearchResults();
-        } else {
-             this.displaySystemMessage("Cannot send message: Not connected.");
+        const modelName = this.plugin.settings.geminiModel || DEFAULT_SETTINGS.geminiModel;
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+
+        const activeFile = this.app.workspace.getActiveFile();
+        const context = (this.plugin.settings.sendContext && activeFile) ? `[Obsidian Context: Current Note is "${activeFile.basename}"]\n` : '';
+        const prefix = this.plugin.settings.promptPrefix ? `${this.plugin.settings.promptPrefix}\n` : '';
+        const fullMessage = `${prefix}${context}${message}`;
+
+        // Construct history for Gemini API (simple alternating user/model)
+        const historyToSend = this.plugin.settings.chatHistory
+            .filter(entry => entry.sender !== 'System')
+            .map(entry => ({
+                role: entry.sender === 'user' ? 'user' : 'model',
+                parts: [{ text: entry.message }]
+            }));
+
+        const currentMessagePart = { text: fullMessage };
+        const requestBody = { contents: [...historyToSend, { role: 'user', parts: [currentMessagePart] }] };
+
+        console.log("[ChatModal sendMessage] Sending to Gemini:", JSON.stringify(requestBody, null, 2));
+
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: { message: `HTTP error! status: ${response.status}` } }));
+                throw new Error(errorData.error?.message || `HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            console.log("[ChatModal sendMessage] Received from Gemini:", JSON.stringify(data, null, 2));
+
+            // Extract text response - adjust based on actual Gemini API structure
+            const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "No response text found.";
+            this.displayMessage('Gemini', aiResponse);
+
+        } catch (error) {
+            console.error("ChatModal: Error calling Gemini API:", error);
+            this.displaySystemMessage(`Error: ${error.message}`);
+        } finally {
+            this.setThinking(false); // Stop thinking indicator
         }
     }
 
     handleCommand(command) {
-        console.log("ChatModal: Handling command:", command);
+        console.log("ChatModal: Cmd:", command);
         const parts = command.split(' ');
         const cmd = parts[0].toLowerCase();
         const args = parts.slice(1).join(' ');
 
         switch (cmd) {
             case '/clear':
-                this.clearChat(true); // Clear visually and history
+                this.clearChat(true);
                 break;
             case '/help':
-                this.displaySystemMessage("Available commands: /clear, /help, /search <query>, /createNote <title>");
+                this.displaySystemMessage("Cmds: /clear, /help, /search <q>, /createNote <t>");
                 break;
             case '/search':
                 if (!args) {
                     this.displaySystemMessage("Usage: /search <query>"); return;
                 }
-                this.displaySystemMessage(`Searching vault for: ${args}... (Not implemented yet)`);
-                // TODO: Implement vault search integration
+                this.displaySystemMessage(`Searching: ${args}... (Not implemented)`);
                 break;
             case '/createnote':
                 if (!args) {
-                    this.displaySystemMessage("Usage: /createNote <Note Title>"); return;
+                    this.displaySystemMessage("Usage: /createNote <Title>"); return;
                 }
                 this.createNoteWithTitle(args);
                 break;
             default:
-                this.displaySystemMessage(`Unknown command: ${cmd}. Type /help for available commands.`);
+                this.displaySystemMessage(`Unknown command: ${cmd}. Try /help.`);
         }
     }
 
@@ -223,13 +227,13 @@ class ChatModal extends Modal {
         if (clearHistory) {
             this.plugin.settings.chatHistory = [];
             this.plugin.saveSettings();
-            new Notice("Chat history cleared.");
+            new Notice("History cleared.");
         }
     }
 
     async createNoteWithTitle(title) {
-        const content = `## Chat Command: Create Note\n\nTitle: ${title}\n\n---\n\n`; // Basic content
-        const newFile = await createNote(title, content, this.plugin.settings.createNoteFolder, this.app);
+        const content = `## Chat Command: Create Note\n\nTitle: ${title}\n\n---\n\n`;
+        const newFile = await createNoteUtil(title, content, this.plugin.settings.createNoteFolder, this.app);
         if (newFile) {
             this.app.workspace.getLeaf(true).openFile(newFile);
             this.close();
@@ -244,36 +248,50 @@ class ChatModal extends Modal {
     }
 
     async searchNotes(query, resultsContainer) {
-         if (!query) { this.hideSearchResults(); return; }
+        if (!query) {
+            this.hideSearchResults();
+            return;
+        }
         const files = this.app.vault.getMarkdownFiles();
-        this.searchResults = files.filter(f => f.basename.toLowerCase().includes(query)).slice(0, 5);
+        this.searchResults = files
+            .filter(file => file.basename.toLowerCase().includes(query))
+            .slice(0, 5);
         this.displaySearchResults(this.searchResults, resultsContainer, (file) => `[[${file.basename}]]`);
     }
 
     async searchTags(query, resultsContainer) {
-         if (!query) { this.hideSearchResults(); return; }
+        if (!query) {
+            this.hideSearchResults();
+            return;
+        }
         const allTags = Object.keys(this.app.metadataCache.getTags());
-        this.searchResults = allTags.filter(t => t.toLowerCase().includes(query)).slice(0, 5);
+        this.searchResults = allTags
+            .filter(tag => tag.toLowerCase().includes(query))
+            .slice(0, 5);
         this.displaySearchResults(this.searchResults, resultsContainer, (tag) => tag);
     }
 
     displaySearchResults(results, container, formatResult) {
-         container.empty();
-        if (results.length === 0) { container.classList.remove('active'); return; }
+        container.empty();
+        if (results.length === 0) {
+            container.classList.remove('active');
+            return;
+        }
         results.forEach(result => {
             const item = container.createDiv({ cls: 'search-item-modal' });
             item.textContent = result.basename || result;
             item.addEventListener('mousedown', (e) => {
                 e.preventDefault();
-                const text = this.inputEl.value;
-                const cursorPos = this.inputEl.selectionStart;
+                const input = this.contentEl.querySelector('.chat-input-modal');
+                const text = input.value;
+                const cursorPos = input.selectionStart;
                 const beforeText = text.slice(0, cursorPos).replace(/(?:^|\s)(?:\[\[|@)[^\s]*$/, '');
                 const afterText = text.slice(cursorPos);
                 const formatted = formatResult(result);
-                this.inputEl.value = beforeText + formatted + ' ' + afterText;
-                this.inputEl.focus();
+                input.value = beforeText + formatted + ' ' + afterText;
+                input.focus();
                 const newCursorPos = beforeText.length + formatted.length + 1;
-                this.inputEl.setSelectionRange(newCursorPos, newCursorPos);
+                input.setSelectionRange(newCursorPos, newCursorPos);
                 this.hideSearchResults();
             });
         });
@@ -281,7 +299,7 @@ class ChatModal extends Modal {
     }
 
     async createNoteFromChat() {
-         console.log("ChatModal: createNoteFromChat called");
+        console.log("ChatModal: createNote");
         if (!this.chatLogEl) return;
         const messages = Array.from(this.chatLogEl.children)
                              .filter(el => !el.classList.contains('system-message-modal'))
@@ -289,23 +307,25 @@ class ChatModal extends Modal {
 
         const fileName = `Chat-${new Date().toISOString().replace(/[:.]/g, '-')}`;
         const content = messages.join('\n\n');
-        await createNote(fileName, content, this.plugin.settings.createNoteFolder, this.app);
+        await createNoteUtil(fileName, content, this.plugin.settings.createNoteFolder, this.app);
         this.close();
     }
 
     async exportChat() {
-         console.log("ChatModal: exportChat called");
-         if (!this.chatLogEl) return;
+        console.log("ChatModal: exportChat");
+        if (!this.chatLogEl) return;
         const messages = Array.from(this.chatLogEl.children)
                              .filter(el => !el.classList.contains('system-message-modal'))
                              .map(msg => msg.textContent || '');
+
         const content = messages.join('\n\n');
+
         try {
             await navigator.clipboard.writeText(content);
-            new Notice('Chat copied to clipboard');
+            new Notice('Chat copied');
         } catch (error) {
-             new Notice('Failed to copy chat to clipboard');
-             console.error('ChatModal: Failed to copy chat:', error);
+             new Notice('Failed to copy chat');
+             console.error('ChatModal: Failed copy:', error);
         }
     }
 
@@ -313,31 +333,10 @@ class ChatModal extends Modal {
         if (!this.chatLogEl) return;
         const messageEl = this.chatLogEl.createDiv({ cls: 'message-modal' });
         const tempDiv = document.createElement('div');
-
-        if (sender === 'Server') {
-            const insertBtn = messageEl.createEl('button', { cls: 'insert-button', text: 'Insert' });
-            insertBtn.addEventListener('click', () => {
-                const template = this.plugin.settings.insertTemplate || '{response}';
-                insertIntoEditor(template.replace('{response}', message), this.app);
-            });
-        }
-
-        renderMarkdown(`**${sender}:** ${message}`, tempDiv, this.app, this);
+        // Pass 'this' (ChatModal instance) as component context
+        renderMarkdownUtil(`**${sender}:** ${message}`, tempDiv, this.app, this);
         messageEl.prepend(tempDiv);
         this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
-
-        // Save to history only if it's not a system message
-        if (sender !== 'System') {
-            this.plugin.settings.chatHistory.push({ sender, message });
-            while (this.plugin.settings.chatHistory.length > this.plugin.settings.maxHistoryLength) {
-                this.plugin.settings.chatHistory.shift();
-            }
-            this.plugin.saveSettings();
-        }
-    }
-
-    insertIntoEditor(text) {
-        insertIntoEditor(text, this.app); // Use utility function
     }
 
     displaySystemMessage(message) {
@@ -345,32 +344,67 @@ class ChatModal extends Modal {
         const messageEl = this.chatLogEl.createDiv({ cls: 'message-modal system-message-modal' });
         messageEl.textContent = message;
         this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
-        // Do not save system messages to history
-    }
-
-    loadHistory() {
-        if (!this.chatLogEl) return;
-        this.chatLogEl.empty();
-        this.plugin.settings.chatHistory.forEach(entry => {
-            // Rerender history messages
-            if (entry.sender === 'System') { // Check if it's a system message
-                 this.displaySystemMessage(entry.message);
-            } else {
-                 this.displayMessage(entry.sender, entry.message);
-            }
-        });
-         console.log(`ChatModal: Loaded ${this.plugin.settings.chatHistory.length} messages from history.`);
     }
 
     onClose() {
-        console.log("ChatModal: onClose called");
-        if (this.wsManager) {
-            this.wsManager.close(); // Use manager's close method
-            this.wsManager = null;
-        }
+        console.log("ChatModal: onClose");
         const { contentEl } = this;
         contentEl.empty();
     }
 }
 
-module.exports = { ChatModal }; // Export ChatModal
+// --- Main Plugin Class ---
+class WebappDashboardPlugin extends Plugin {
+    settings = DEFAULT_SETTINGS;
+
+    async onload() {
+        console.log('[WebappDashboard] onload: Loading plugin...');
+        try {
+            await this.loadSettings();
+            console.log('[WebappDashboard] onload: Settings loaded.');
+        } catch (error) { console.error('[WebappDashboard] onload: Error loading settings:', error); }
+
+        try {
+            this.addSettingTab(new WebappDashboardSettingTab(this.app, this));
+            console.log('[WebappDashboard] onload: Settings tab added.');
+        } catch (error) { console.error('[WebappDashboard] onload: Error adding settings tab:', error); }
+
+        try {
+            this.addRibbonIcon('message-circle', 'Open Webapp Chat', () => {
+                console.log('[WebappDashboard] Ribbon icon clicked');
+                try { new ChatModal(this.app, this).open(); }
+                catch (e) { console.error("Err opening modal (ribbon):", e); new Notice("Failed to open chat modal."); }
+            });
+            console.log('[WebappDashboard] onload: Ribbon icon added.');
+        } catch (error) { console.error('[WebappDashboard] onload: Error adding ribbon icon:', error); }
+
+        try {
+            this.addCommand({
+                id: 'open-webapp-dashboard-chat', name: 'Open Webapp Chat',
+                hotkeys: [{ modifiers: ["Mod", "Shift"], key: "C" }],
+                callback: () => {
+                    console.log('[WebappDashboard] Command executed');
+                    try { new ChatModal(this.app, this).open(); }
+                    catch (e) { console.error("Err opening modal (cmd):", e); new Notice("Failed to open chat modal."); }
+                }
+            });
+            console.log('[WebappDashboard] onload: Command added.');
+        } catch (error) { console.error('[WebappDashboard] onload: Error adding command:', error); }
+
+        this.registerEvent(this.app.workspace.on('webapp-dashboard:clear-history', () => {
+            console.log('[WebappDashboard] clear-history event');
+            this.app.workspace.getLeavesOfType('modal').forEach(leaf => {
+                if (leaf.view instanceof Modal && leaf.view.constructor.name === 'ChatModal') {
+                     try { if(leaf.view.loadHistory) leaf.view.loadHistory(); } catch (e) { console.error("Error reloading history on modal:", e); }
+                }
+            });
+        }));
+        console.log('[WebappDashboard] onload: Event listener registered.');
+
+        console.log('[WebappDashboard] onload: Finished.');
+    }
+
+    onunload() { console.log('[WebappDashboard] onunload: Unloading plugin...'); }
+    async loadSettings() { try { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); if (!Array.isArray(this.settings.chatHistory)) this.settings.chatHistory = []; if (this.settings.maxHistoryLength > 0 && this.settings.chatHistory.length > this.settings.maxHistoryLength) { this.settings.chatHistory = this.settings.chatHistory.slice(-this.settings.maxHistoryLength); } console.log('[WebappDashboard] loadSettings: Success.'); } catch (error) { console.error('[WebappDashboard] loadSettings: Error:', error); this.settings = DEFAULT_SETTINGS; } }
+	async saveSettings() { try { await this.saveData(this.settings); console.log('[WebappDashboard] saveSettings: Success.'); } catch (error) { console.error('[WebappDashboard] saveSettings: Error:', error); new Notice("Failed to save settings."); } }
+}
